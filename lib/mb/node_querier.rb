@@ -427,7 +427,7 @@ module MotherBrain
       chef_synchronize(chef_environment: node.chef_environment, force: options[:force], job: job) do
         if node.run_list.include?(DISABLED_RUN_LIST_ENTRY)
           job.report_success("#{node.name} is already disabled.")
-        else
+        elsif not options[:offline]
           required_run_list = on_dynamic_services(job, node) do |dynamic_service, plugin|
             dynamic_service.node_state_change(job,
                                               plugin,
@@ -435,12 +435,12 @@ module MotherBrain
                                               MB::Gear::DynamicService::STOP,
                                               false)
           end
-        end
-        if !required_run_list.empty?
-          job.set_status "Running chef with the following run list: #{required_run_list.inspect}"
-          self.bulk_chef_run(job, [node], required_run_list)
-        else
-          job.set_status "No recipes required to run."
+          if !required_run_list.empty?
+            job.set_status "Running chef with the following run list: #{required_run_list.inspect}"
+            bulk_chef_run(job, [node], required_run_list)
+          else
+            job.set_status "No recipes required to run."
+          end
         end
 
         node.run_list = [DISABLED_RUN_LIST_ENTRY].concat(node.run_list)
