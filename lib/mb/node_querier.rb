@@ -281,6 +281,8 @@ module MotherBrain
     # @param [Hash] options
     #
     # @option options [Boolean] :force (false) Ignore environment lock and execute anyway.
+    # @option options [Boolean] :offline (false) Do not attempt to connect to the node to 
+    #                                            disable services. Assume it is offline.
     #
     # @return [MB::JobTicket]
     def async_disable(host, options = {})
@@ -406,10 +408,12 @@ module MotherBrain
     # @param [Hash] options
     #
     # @option options [Boolean] :force (false) Ignore environment lock and execute anyway.
-    # @option options [Boolean] :offline (false) Do not attempt to connect to the node. Assume it is offline.
+    # @option options [Boolean] :offline (false) Do not attempt to connect to the node to 
+    #                                            disable services. Assume it is offline.
     # 
     def disable(job, host, options = {})
       node_name = if options[:offline]
+                    job.report_running("Using #{host} as node name as --offline was passed")
                     host
                   else
                     job.report_running("Discovering host's registered node name")
@@ -428,34 +432,41 @@ module MotherBrain
       rescue Ridley::Errors::ResourceNotFound
         job.report_failure("The node #{node_name} is not registered with the Chef server.")
       end
-        
-      required_run_list = []
+      
+      success = false
       chef_synchronize(chef_environment: node.chef_environment, force: options[:force], job: job) do
         if node.run_list.include?(DISABLED_RUN_LIST_ENTRY)
-          job.report_success("#{node.name} is already disabled.")
-        elsif not options[:offline]
-          required_run_list = on_dynamic_services(job, node) do |dynamic_service, plugin|
-            dynamic_service.node_state_change(job,
-                                              plugin,
-                                              node,
-                                              MB::Gear::DynamicService::STOP,
-                                              false)
-          end
-          if !required_run_list.empty?
-            job.set_status "Running chef with the following run list: #{required_run_list.inspect}"
-            bulk_chef_run(job, [node], required_run_list)
-          else
-            job.set_status "No recipes required to run."
-          end
-        end
-
-        node.run_list = [DISABLED_RUN_LIST_ENTRY].concat(node.run_list)
-        if node.save
-          job.report_success "#{node.name} disabled."
+          job.set_status("#{node.name} is already disabled.")
+          success = true
         else
-          job.report_failure "#{node.name} did not save! Disabled run_list entry was unable to be added to the node."
+          required_run_list = []
+          unless options[:offline]
+            required_run_list = on_dynamic_services(job, node) do |dynamic_service, plugin|
+              dynamic_service.node_state_change(job,
+                                                plugin,
+                                                node,
+                                                MB::Gear::DynamicService::STOP,
+                                                false)
+            end
+            if !required_run_list.empty?
+              job.set_status "Running chef with the following run list: #{required_run_list.inspect}"
+              bulk_chef_run(job, [node], required_run_list)
+            else
+              job.set_status "No recipes required to run."
+            end
+          end
+
+          node.run_list = [DISABLED_RUN_LIST_ENTRY].concat(node.run_list)
+
+          if node.save
+            job.set_status "#{node.name} disabled."
+            success = true
+          else
+            job.set_status "#{node.name} did not save! Disabled run_list entry was unable to be added to the node due to node save failure."
+          end
         end
       end
+      job.report_boolean(success)
     rescue MotherBrain::ResourceLocked => e
       job.report_failure e.message
     rescue => e
